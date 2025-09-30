@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ตัวจับเวลาการรักษา (เตียง 3-15)</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom font for better Thai display */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&family=Noto+Sans+Thai:wght@100..900&display=swap');
+        body {
+            font-family: 'Noto Sans Thai', 'Inter', sans-serif;
+            background-color: #f7f9fb;
+        }
+        .timer-display {
+            font-family: 'Inter', monospace; /* Use monospace for the timer numbers */
+            font-size: 2.5rem;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+        }
+        .blinking {
+            animation: blinker 1s linear infinite;
+        }
+        @keyframes blinker {
+            50% { opacity: 0; }
+        }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+
+    <div class="max-w-4xl mx-auto">
+        <h1 class="text-3xl font-extrabold text-indigo-700 mb-6 text-center">
+            🏥 ระบบจับเวลาการรักษาประจำเตียง (เตียง 3 - 15)
+        </h1>
+        <p class="text-center text-gray-500 mb-8">
+            เลือกชนิดการรักษาแล้วกด 'เริ่ม' เพื่อเริ่มจับเวลา
+        </p>
+
+        <!-- Bed Cards Container -->
+        <div id="bed-container" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+            <!-- Bed cards will be inserted here by JavaScript -->
+        </div>
+    </div>
+
+    <script>
+        // กำหนดข้อมูลการรักษา
+        const treatments = {
+            '1200': { label: '理疗/灸 (กายภาพบำบัด/รมยา)', durationSeconds: 1200 }, // 20 นาที
+            '540': { label: '拔罐 (การครอบแก้ว)', durationSeconds: 540 }          // 9 นาที
+        };
+
+        // ข้อมูลเตียง: เตียง 3 ถึง 15
+        const bedNumbers = Array.from({ length: 15 - 3 + 1 }, (_, i) => i + 3);
+
+        // ตัวแปรเก็บสถานะของตัวจับเวลาแต่ละเตียง
+        // { '3': { isActive: false, duration: 0, startTime: 0, timerId: null, label: '' } }
+        let bedTimers = {};
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+        /**
+         * Utility function เพื่อแปลงวินาทีให้เป็นรูปแบบ MM:SS
+         * @param {number} totalSeconds - จำนวนวินาทีทั้งหมด
+         * @returns {string} รูปแบบเวลา MM:SS
+         */
+        function formatTime(totalSeconds) {
+            if (totalSeconds < 0) totalSeconds = 0;
+            const minutes = Math.floor(totalSeconds / 60);
+            const seconds = totalSeconds % 60;
+            return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+        }
+
+        /**
+         * อัปเดตการแสดงผลของตัวจับเวลาสำหรับเตียงที่ระบุ
+         * @param {number} bedNum - หมายเลขเตียง
+         */
+        function updateDisplay(bedNum) {
+            const bedState = bedTimers[bedNum];
+            const displayElement = document.getElementById(`time-${bedNum}`);
+            const cardElement = document.getElementById(`card-${bedNum}`);
+
+            if (!bedState || !displayElement || !cardElement) return;
+
+            const timeElapsed = Math.floor((Date.now() - bedState.startTime) / 1000);
+            const timeLeft = bedState.duration - timeElapsed;
+            
+            // อัปเดตตัวเลข
+            displayElement.textContent = formatTime(timeLeft);
+
+            // อัปเดตสีและสถานะกระพริบ
+            if (timeLeft <= 0) {
+                // เสร็จสิ้น
+                displayElement.textContent = '✅ เสร็จสิ้น!';
+                displayElement.classList.remove('text-green-500', 'text-yellow-500', 'blinking');
+                displayElement.classList.add('text-red-600', 'font-extrabold');
+                cardElement.classList.remove('border-indigo-400');
+                cardElement.classList.add('border-green-500', 'bg-green-50');
+                clearInterval(bedState.timerId);
+                bedState.timerId = null; // ป้องกันการเรียกใช้ซ้ำ
+            } else if (timeLeft <= 60) {
+                // เหลือ 1 นาทีสุดท้าย (เตือน)
+                displayElement.classList.remove('text-green-500');
+                displayElement.classList.add('text-yellow-500', 'blinking');
+            } else {
+                // กำลังทำงานปกติ
+                displayElement.classList.remove('text-yellow-500', 'text-red-600', 'blinking', 'font-extrabold');
+                displayElement.classList.add('text-green-500');
+            }
+        }
+
+        /**
+         * เริ่มตัวจับเวลาสำหรับเตียงที่ระบุ
+         * @param {number} bedNum - หมายเลขเตียง
+         */
+        function startTimer(bedNum) {
+            const selectElement = document.getElementById(`select-${bedNum}`);
+            const durationKey = selectElement.value;
+
+            if (!durationKey || !treatments[durationKey]) {
+                console.error(`เตียง ${bedNum}: กรุณาเลือกชนิดการรักษาก่อน`);
+                // ในแอปจริงควรแสดงข้อความเตือนบน UI แทน
+                document.getElementById(`msg-${bedNum}`).textContent = '⚠️ กรุณาเลือกชนิดการรักษา';
+                setTimeout(() => document.getElementById(`msg-${bedNum}`).textContent = '', 3000);
+                return;
+            }
+
+            // ตรวจสอบและหยุดตัวจับเวลาเดิม (ถ้ามี)
+            stopTimer(bedNum);
+
+            const durationSeconds = treatments[durationKey].durationSeconds;
+
+            // ตั้งค่าสถานะใหม่
+            bedTimers[bedNum] = {
+                isActive: true,
+                duration: durationSeconds,
+                startTime: Date.now(),
+                label: treatments[durationKey].label,
+                timerId: setInterval(() => updateDisplay(bedNum), 1000)
+            };
+
+            // อัปเดตการแสดงผลทันทีและล็อกปุ่ม
+            updateDisplay(bedNum);
+            renderBedControls(bedNum);
+
+            // ซ่อนข้อความเตือน
+            document.getElementById(`msg-${bedNum}`).textContent = '';
+        }
+
+        /**
+         * หยุดและรีเซ็ตตัวจับเวลาสำหรับเตียงที่ระบุ
+         * @param {number} bedNum - หมายเลขเตียง
+         */
+        function stopTimer(bedNum) {
+            const bedState = bedTimers[bedNum];
+
+            if (bedState && bedState.timerId) {
+                clearInterval(bedState.timerId);
+            }
+
+            // รีเซ็ตสถานะ
+            bedTimers[bedNum] = {
+                isActive: false,
+                duration: 0,
+                startTime: 0,
+                timerId: null,
+                label: ''
+            };
+
+            // อัปเดตการแสดงผลและปุ่มควบคุม
+            const displayElement = document.getElementById(`time-${bedNum}`);
+            const cardElement = document.getElementById(`card-${bedNum}`);
+            
+            if (displayElement) {
+                displayElement.textContent = '00:00';
+                displayElement.classList.remove('text-green-500', 'text-yellow-500', 'text-red-600', 'blinking', 'font-extrabold');
+                displayElement.classList.add('text-gray-400');
+            }
+            if (cardElement) {
+                cardElement.classList.remove('border-green-500', 'bg-green-50');
+                cardElement.classList.add('border-indigo-400', 'bg-white');
+            }
+
+            renderBedControls(bedNum);
+        }
+
+        /**
+         * เรนเดอร์ปุ่มควบคุม (Start/Stop) และเมนูเลือก
+         * @param {number} bedNum - หมายเลขเตียง
+         */
+        function renderBedControls(bedNum) {
+            const bedState = bedTimers[bedNum];
+            const controlsDiv = document.getElementById(`controls-${bedNum}`);
+            const statusDiv = document.getElementById(`status-${bedNum}`);
+
+            if (!controlsDiv || !statusDiv) return;
+
+            const isRunning = bedState && bedState.timerId !== null;
+
+            // สร้าง Select Options
+            let selectOptions = '';
+            for (const key in treatments) {
+                selectOptions += `<option value="${key}">${treatments[key].label} (${key/60} นาที)</option>`;
+            }
+
+            // สร้าง HTML สำหรับปุ่มและเมนูเลือก
+            controlsDiv.innerHTML = `
+                <select id="select-${bedNum}" ${isRunning ? 'disabled' : ''} 
+                    class="w-full p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 bg-white text-sm">
+                    <option value="" disabled selected>เลือกชนิดการรักษา</option>
+                    ${selectOptions}
+                </select>
+                <div class="mt-3 flex space-x-3">
+                    <button onclick="startTimer(${bedNum})" ${isRunning ? 'disabled' : ''} 
+                        class="w-full py-2 px-4 rounded-lg font-semibold transition duration-150 
+                        ${isRunning ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-md hover:shadow-lg active:bg-indigo-800'}">
+                        ${isRunning ? '⏳ กำลังเริ่ม...' : '▶️ เริ่ม'}
+                    </button>
+                    <button onclick="stopTimer(${bedNum})" ${isRunning || bedState.duration > 0 ? '' : 'disabled'}
+                        class="w-full py-2 px-4 rounded-lg font-semibold transition duration-150 
+                        ${isRunning || bedState.duration > 0 ? 'bg-red-500 text-white hover:bg-red-600 shadow-md hover:shadow-lg active:bg-red-700' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}">
+                        🔄 รีเซ็ต
+                    </button>
+                </div>
+            `;
+            
+            // อัปเดตสถานะการรักษาที่กำลังทำงาน
+            statusDiv.innerHTML = isRunning 
+                ? `<p class="text-sm font-medium text-indigo-600">กำลังรักษา: ${bedState.label}</p>`
+                : `<p class="text-sm text-gray-400">พร้อมเริ่ม</p>`;
+
+            // หากมีการเลือกค่ามาก่อน ให้ตั้งค่า select element
+            if (isRunning) {
+                const currentDurationKey = Object.keys(treatments).find(key => treatments[key].durationSeconds === bedState.duration);
+                document.getElementById(`select-${bedNum}`).value = currentDurationKey;
+            }
+        }
+
+        /**
+         * สร้างโครงสร้าง HTML เริ่มต้นสำหรับทุกเตียง
+         */
+        function initApp() {
+            const container = document.getElementById('bed-container');
+            
+            bedNumbers.forEach(bedNum => {
+                // ตั้งค่าสถานะเริ่มต้น
+                bedTimers[bedNum] = { isActive: false, duration: 0, startTime: 0, timerId: null, label: '' };
+
+                // สร้าง Card HTML
+                const cardHtml = `
+                    <div id="card-${bedNum}" class="bg-white p-6 rounded-xl shadow-lg border-4 border-indigo-400 transition-all duration-300">
+                        <div class="flex justify-between items-start mb-4">
+                            <h2 class="text-xl md:text-2xl font-bold text-gray-800">
+                                <span class="text-indigo-600 text-4xl mr-2">B${bedNum}</span> เตียงที่ ${bedNum}
+                            </h2>
+                            <div id="status-${bedNum}"></div>
+                        </div>
+
+                        <div class="text-center my-6">
+                            <p class="text-sm font-medium text-gray-500">เวลาคงเหลือ</p>
+                            <div id="time-${bedNum}" class="timer-display text-gray-400">
+                                00:00
+                            </div>
+                        </div>
+                        
+                        <p id="msg-${bedNum}" class="text-red-500 text-center text-sm h-4 mb-2"></p>
+
+                        <div id="controls-${bedNum}">
+                            <!-- Controls will be rendered here -->
+                        </div>
+                    </div>
+                `;
+                container.insertAdjacentHTML('beforeend', cardHtml);
+                renderBedControls(bedNum); // เรนเดอร์ปุ่มควบคุมเริ่มต้น
+            });
+        }
+
+        // เริ่มต้นแอปพลิเคชันเมื่อโหลดหน้าเว็บเสร็จ
+        window.onload = initApp;
+
+    </script>
+</body>
+</html>
